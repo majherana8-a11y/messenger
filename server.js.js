@@ -1,69 +1,60 @@
 // Мессенджер: node server.js  →  http://localhost:3000  (без зависимостей, Node 16+)
-const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto');
+const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto'), zlib = require('zlib');
 const PORT = process.env.PORT || 3000, UP = path.join(__dirname, 'uploads'), DBF = path.join(__dirname, 'db.json');
 fs.mkdirSync(UP, { recursive: true });
 
 let db = { users: {}, chats: {}, msgs: {}, tokens: {} };
 try { db = JSON.parse(fs.readFileSync(DBF)); } catch {}
-const fixDb = () => { db.users = db.users || {}; db.chats = db.chats || {}; db.msgs = db.msgs || {}; db.tokens = db.tokens || {}; db.stories = db.stories || []; db.tickets = db.tickets || []; };
-fixDb();
+db.stories = db.stories || [];
+db.tickets = db.tickets || [];
 // операторы техподдержки: ники через запятую, напр.  SUPPORT_ADMINS=admin,vasya node server.js
 const STAFF = new Set((process.env.SUPPORT_ADMINS || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean));
-
-// ---------- постоянное хранилище (Supabase): переменные окружения SUPABASE_URL и SUPABASE_KEY (ключ service_role, только на сервере!) ----------
-const SB_URL = (process.env.SUPABASE_URL || '').replace(/\/+$/, ''), SB_KEY = process.env.SUPABASE_KEY || '', SB = !!(SB_URL && SB_KEY);
-const sbH = { apikey: SB_KEY, Authorization: 'Bearer ' + SB_KEY };
-let saving = false, dirty = false, timer = null;
-const flush = async () => { // вся база одним документом в таблице kv (строка id=1)
-  if (!SB) return;
+// операторы по юзернейму (он уникален): по умолчанию @Kartel и @Aristokrat. Если задан SUPPORT_ADMINS (логины), работают только они: так надёжнее
+const STAFF_UN = new Set((process.env.SUPPORT_USERNAMES || 'kartel,aristokrat').split(',').map(x => x.trim().toLowerCase().replace(/^@/, '')).filter(Boolean));
+const staffOk = n => STAFF.has(n) || (!STAFF.size && STAFF_UN.has(String((db.users[n] || {}).username || '').toLowerCase()));
+// каждое новое обращение и каждое сообщение пользователя приходит всем операторам в личку от бота
+const notifyStaff = (tk, text, first) => {
+  Object.keys(db.users).filter(n => staffOk(n) && n !== tk.from && !db.users[n].bot).forEach(n => {
+    const u = db.users[n]; if ((u.hidden || []).length) u.hidden = u.hidden.filter(x => x !== 'dm_' + crypto.createHash('md5').update([ANNA, n].sort().join('|')).digest('hex').slice(0, 12));
+    addMsg(getDm(ANNA, n), { id: id(), from: ANNA, avatar: null, text: (first ? '🛟 Новое обращение' : '🛟 Новое сообщение в обращении') + ' от ' + pub(tk.from).name + ' (@' + (db.users[tk.from].username || tk.from) + ')\nТема: ' + tk.subject + '\n\n' + String(text).slice(0, 400) + '\n\nОтветить: Настройки → Техподдержка', ts: Date.now() });
+  });
+};
+// запись БД: не чаще раза в 400 мс (было — на каждое сообщение, сериализация всей базы блокировала сервер), атомарно через временный файл
+let saveT = null, saving = false, dirty = false;
+const flush = () => {
+  saveT = null;
   if (saving) { dirty = true; return; }
   saving = true;
-  try {
-    const r = await fetch(SB_URL + '/rest/v1/kv?on_conflict=id', { method: 'POST', headers: { ...sbH, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates' }, body: JSON.stringify({ id: 1, data: db }) });
-    if (!r.ok) console.error('Supabase: не удалось сохранить базу', r.status, await r.text());
-  } catch (e) { console.error('Supabase: ошибка сохранения', e.message); }
-  saving = false;
-  if (dirty) { dirty = false; flush(); }
+  const tmp = DBF + '.tmp';
+  fs.writeFile(tmp, JSON.stringify(db), err => {
+    const done = () => { saving = false; if (dirty) { dirty = false; save(); } };
+    if (err) return done();
+    fs.rename(tmp, DBF, done);
+  });
 };
-const save = () => {
-  fs.writeFile(DBF, JSON.stringify(db), () => {});
-  if (SB && !timer) timer = setTimeout(() => { timer = null; flush(); }, 1500); // копим изменения 1,5 с, чтобы не слать запрос на каждое сообщение
-};
-async function loadRemote() { // при старте берём базу из Supabase; если не получилось — НЕ запускаемся, чтобы не затереть данные пустой базой
-  if (!SB) { console.warn('SUPABASE_URL / SUPABASE_KEY не заданы: данные хранятся только на диске сервера и пропадут при деплое'); return; }
-  try {
-    const r = await fetch(SB_URL + '/rest/v1/kv?id=eq.1&select=data', { headers: sbH });
-    if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + await r.text());
-    const rows = await r.json();
-    if (rows[0] && rows[0].data) { db = rows[0].data; fixDb(); console.log('База загружена из Supabase: пользователей ' + Object.keys(db.users).length); }
-    else { console.log('В Supabase пока пусто — стартуем с текущей базой и сохраняем её'); await flush(); }
-  } catch (e) { console.error('Не удалось загрузить базу из Supabase:', e.message); process.exit(1); }
-}
-const backupFile = async (name, type) => { // копия загруженного файла в Supabase Storage (бакет uploads)
-  if (!SB) return;
-  try {
-    const buf = await fs.promises.readFile(path.join(UP, name));
-    const r = await fetch(SB_URL + '/storage/v1/object/uploads/' + name, { method: 'POST', headers: { ...sbH, 'Content-Type': type || 'application/octet-stream', 'x-upsert': 'true' }, body: buf });
-    if (!r.ok) console.error('Supabase Storage: не удалось сохранить файл', name, r.status, await r.text());
-  } catch (e) { console.error('Supabase Storage: ошибка', e.message); }
-};
-const restoreFile = async (name, f) => { // файла нет на диске (после деплоя) — достаём из Supabase Storage
-  if (!SB) return;
-  try {
-    const r = await fetch(SB_URL + '/storage/v1/object/uploads/' + name, { headers: sbH });
-    if (r.ok) await fs.promises.writeFile(f, Buffer.from(await r.arrayBuffer()));
-  } catch {}
-};
-const onStop = async () => { if (timer) { clearTimeout(timer); timer = null; } await flush(); process.exit(0); }; // при остановке (деплой) успеваем сохранить
-process.on('SIGTERM', onStop); process.on('SIGINT', onStop);
+const save = () => { if (!saveT) saveT = setTimeout(flush, 400); };
+const flushSync = () => { try { if (saveT) clearTimeout(saveT); fs.writeFileSync(DBF, JSON.stringify(db)); } catch {} };
+process.on('SIGINT', () => { flushSync(); process.exit(0); });
+process.on('SIGTERM', () => { flushSync(); process.exit(0); });
 
 const EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'video/webm': 'webm', 'audio/mp3': 'mp3', 'audio/mpeg': 'mp3', 'audio/ogg': 'ogg', 'audio/x-m4a': 'm4a', 'audio/mp4': 'm4a', 'video/mp4': 'mp4' };
 const MIME = Object.fromEntries(Object.entries(EXT).map(([m, e]) => [e, m]));
 const REACTS = ['❤️', '👍', '👎', '😂', '‼️', '❓'];
 const clients = new Map(); // ник -> Set(res) для SSE
 const id = () => crypto.randomBytes(8).toString('hex');
+const MAX_ACCOUNTS_PER_IP = +process.env.MAX_ACCOUNTS_PER_IP || 2; // другое значение: MAX_ACCOUNTS_PER_IP=5 node server.js
+const ipHash = req => crypto.createHash('sha256').update('reis|' + (String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '')).digest('hex').slice(0, 24);
 const hash = (p, s) => crypto.scryptSync(p, s, 32).toString('hex');
-const send = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
+const send = (res, code, obj) => {
+  const body = Buffer.from(JSON.stringify(obj)), ae = (res.req && res.req.headers['accept-encoding']) || '';
+  if (body.length > 1400 && /\bgzip\b/.test(ae)) {
+    return zlib.gzip(body, { level: 4 }, (e, z) => {
+      if (e) { res.writeHead(code, { 'Content-Type': 'application/json' }); return res.end(body); }
+      res.writeHead(code, { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip', 'Vary': 'Accept-Encoding' }); res.end(z);
+    });
+  }
+  res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(body);
+};
 const body = req => new Promise(r => {
   let b = '';
   req.on('data', c => { b += c; if (b.length > 1e6) req.destroy(); });
@@ -85,7 +76,15 @@ const pub = (n, full) => { // full=true только для своего про�
   if (p.login) o.hidLogin = true;
   return o;
 };
-const out = m => { const x = pub(m.from), o = { ...m, name: x.name, avatar: x.avatar, username: x.username }; if (m.reply) o.reply = { ...m.reply, name: pub(m.reply.from).name }; return o; };
+// сообщение «от лица канала»: m.as = id канала; имя и аватар берутся у канала, автор (from) остаётся для прав на изменение и удаление
+const asChan = m => { const ch = m.as && db.chats[m.as]; return ch && ch.type === 'channel' ? ch : null; };
+const nameOf = m => { const ch = asChan(m); return ch ? ch.name : pub(m.from).name; };
+const out = m => {
+  const x = pub(m.from), o = { ...m, name: x.name, avatar: x.avatar, username: x.username }, ch = asChan(m);
+  if (ch) { o.name = ch.name; o.avatar = ch.avatar || null; o.username = ''; o.asChan = ch.id; }
+  if (m.reply) o.reply = { ...m.reply, name: nameOf(m.reply) };
+  return o;
+};
 // ---------- истории (живут 24 часа) ----------
 const TTL = 24 * 3600e3, MAX_STORIES = 30;
 const live = () => { // отдаёт актуальные истории, просроченные удаляет
@@ -132,12 +131,14 @@ const countUnread = (c, who) => { // сколько сообщений от др
   return Math.min(n, 999);
 };
 // последнее сообщение для списка чатов (текст ограничен, медиа только как признак)
+// обои: пресет p0..p99, цвет #rrggbb или загруженная картинка /uploads/имя.ext
+const wallOk = v => v == null || v === '' || (typeof v === 'string' && /^(p\d{1,2}|#[0-9a-fA-F]{6}|\/uploads\/\w+\.\w{2,5})$/.test(v));
 const lastOf = c => {
   const a = alive(c), m = a[a.length - 1]; if (!m) return null;
-  return { id: m.id, from: m.from, name: pub(m.from).name, ts: m.ts, text: String(m.text || '').slice(0, 100), sticker: m.sticker || undefined, mtype: m.mtype || undefined, fname: m.fname || undefined, media: !!m.media || undefined, story: !!m.story || undefined };
+  return { id: m.id, from: m.from, name: nameOf(m), ts: m.ts, text: String(m.text || '').slice(0, 100), sticker: m.sticker || undefined, mtype: m.mtype || undefined, fname: m.fname || undefined, media: !!m.media || undefined, story: !!m.story || undefined };
 };
 const view = c => ({
-  id: c.id, type: c.type, name: c.name, owner: c.owner, count: c.members.length, avatar: c.avatar || null, admins: c.admins || [], discuss: c.discuss || null, parent: c.parent || null, ttl: c.ttl || 0, private: !!c.private, history: c.history || 'visible', reactions: c.reactions || 'all', greeting: c.greeting || null, perms: c.perms || null, color: c.color || '', desc: c.desc || '', pinned: c.pinned || null,
+  id: c.id, type: c.type, name: c.name, owner: c.owner, count: c.members.length, avatar: c.avatar || null, admins: c.admins || [], discuss: c.discuss || null, parent: c.parent || null, ttl: c.ttl || 0, private: !!c.private, history: c.history || 'visible', reactions: c.reactions || 'all', greeting: c.greeting || null, perms: c.perms || null, color: c.color || '', desc: c.desc || '', pinned: c.pinned || null, wall: c.wall || null,
   members: c.type === 'dm' ? c.members : undefined,
   reads: c.type === 'channel' ? undefined : (c.reads || {}),
   last: lastOf(c),
@@ -155,7 +156,7 @@ const permErr = (c, who, p) => {
   return p.text && pr.text === false ? 'В этом чате запрещено писать сообщения' : null;
 };
 const chatLog = (c, by, text) => { (c.log = c.log || []).push({ ts: Date.now(), by, text }); c.log = c.log.slice(-100); };
-const LOGN = { edit: 'Изменён чат', admin: 'Изменены админы', kick: 'Удалён участник', comments: 'Включены комментарии' };
+const LOGN = { edit: 'Изменён чат', admin: 'Изменены админы', kick: 'Удалён участник', ban: 'Чёрный список', comments: 'Включены комментарии' };
 const onJoin = (c, who, H) => {
   (c.joined = c.joined || {})[who] = Date.now();
   if (c.greeting && c.greeting.on && c.greeting.text) H.addMsg(c, { id: H.id(), from: c.owner, text: c.greeting.text.replace(/\{name\}/g, H.pub(who).name), ts: Date.now() });
@@ -208,6 +209,13 @@ const BUILTIN = [
   ['b_party', 'Праздник', '🎉 🥳 🎂 🎁 🎈 🍾 🎊 🔥 💯 ✨ 🎶 🏆'],
   ['b_space', 'Космос', '🚀 🌍 🌙 ⭐ ☄️ 👽 🛸 🪐 🌌 🔭']
 ].map(([id, name, it]) => ({ id, name, items: it.split(' ') }));
+// у стикера из публичного пака в сообщении хранится ссылка на пак: получатель может добавить пак целиком
+const packOrigin = (me, pid, url) => {
+  const mine = ((db.users[me] || {}).packs || []).find(x => x.id === pid); if (!mine || !mine.items.includes(url)) return null;
+  const pubId = mine.src || mine.id;
+  for (const x of Object.values(db.users)) { const k = (x.packs || []).find(y => y.id === pubId && y.public && !y.src && y.items.includes(url)); if (k) return { id: k.id, name: k.name }; }
+  return null;
+};
 function packx(u, me, m, q, B, H) { // [код, ответ]
   const E = (k, e) => [k, { error: e }], P = u.packs = u.packs || [], IMG = /^\/uploads\/\w+\.(png|jpg|gif|webp)$/;
   if (m === 'GET') {
@@ -247,7 +255,7 @@ function msgx(c, me, a, B, H) {
       const s = ms.find(x => x.id === id); if (!s) continue;
       if (s.enc) return E(400, 'Зашифрованные сообщения нельзя пересылать');
       const pe = permErr(t, me, { text: s.text, media: !!s.media, mtype: s.mtype, sticker: s.sticker }); if (pe) return E(403, pe);
-      const n = { id: H.id(), from: me, text: s.text || '', ts: Date.now(), fwd: { from: s.fwd ? s.fwd.from : s.from, name: s.fwd ? s.fwd.name : H.pub(s.from).name } };
+      const n = { id: H.id(), from: me, text: s.text || '', ts: Date.now(), fwd: { from: s.fwd ? s.fwd.from : s.from, name: s.fwd ? s.fwd.name : (H.db.chats[s.as] ? H.db.chats[s.as].name : H.pub(s.from).name) } };
       if (s.sticker) n.sticker = s.sticker; else if (s.media) { n.media = s.media; n.mtype = s.mtype; if (s.fname) n.fname = s.fname; }
       res.push(H.addMsg(t, n));
     }
@@ -281,6 +289,21 @@ function msgx(c, me, a, B, H) {
 }
 const HX = { get db() { return db; }, id, pub, addMsg, view, push, save, out };
 
+// страница: сжатие gzip один раз на версию файла + ETag (повторные заходы с телефона отдают 304 без передачи 600 КБ)
+const pageCache = new Map();
+function servePage(req, res, f) {
+  const st = fs.statSync(f); let c = pageCache.get(f);
+  if (!c || c.mtime !== st.mtimeMs) {
+    const raw = fs.readFileSync(f);
+    c = { mtime: st.mtimeMs, raw, gz: zlib.gzipSync(raw, { level: 9 }), etag: '"' + crypto.createHash('md5').update(raw).digest('hex') + '"' };
+    pageCache.set(f, c);
+  }
+  const H = { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', 'ETag': c.etag, 'Vary': 'Accept-Encoding' };
+  if (req.headers['if-none-match'] === c.etag) { res.writeHead(304, H); return res.end(); }
+  if (/\bgzip\b/.test(req.headers['accept-encoding'] || '')) { res.writeHead(200, { ...H, 'Content-Encoding': 'gzip' }); return res.end(c.gz); }
+  res.writeHead(200, H); res.end(c.raw);
+}
+
 async function handle(req, res) {
   const u = new URL(req.url, 'http://x'), p = u.pathname, m = req.method;
 
@@ -292,12 +315,11 @@ async function handle(req, res) {
   if (p === '/') {
     const f = path.join(__dirname, 'index.html');
     if (!fs.existsSync(f)) { res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('Не найден index.html рядом с server.js'); }
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' }); return fs.createReadStream(f).pipe(res);
+    return servePage(req, res, f);
   }
 
   if (p.startsWith('/uploads/')) { // файлы с поддержкой Range (перемотка видео)
     const f = path.join(UP, path.basename(p));
-    if (!fs.existsSync(f)) await restoreFile(path.basename(p), f);
     if (!fs.existsSync(f)) { res.writeHead(404); return res.end(); }
     const size = fs.statSync(f).size, type = MIME[path.extname(f).slice(1)] || 'application/octet-stream';
     const h = { 'Content-Type': type, 'Accept-Ranges': 'bytes', 'X-Content-Type-Options': 'nosniff' };
@@ -319,8 +341,10 @@ async function handle(req, res) {
     const nick = login.toLowerCase();
     if (mode === 'register') {
       if (db.users[nick]) return send(res, 409, { error: 'Этот логин уже занят' });
+      const ipH = ipHash(req); // лимит: не больше MAX_ACCOUNTS_PER_IP аккаунтов с одного IP (в базе хранится только хэш адреса)
+      if (Object.values(db.users).filter(x => x.regIp === ipH).length >= MAX_ACCOUNTS_PER_IP) return send(res, 429, { error: 'С одного устройства нельзя создать больше ' + MAX_ACCOUNTS_PER_IP + ' аккаунтов' });
       const salt = id();
-      db.users[nick] = { salt, hash: hash(password, salt), avatar: null, name: login, username: '', bio: '' };
+      db.users[nick] = { salt, hash: hash(password, salt), avatar: null, name: login, username: '', bio: '', regIp: ipH };
     } else {
       const usr = db.users[nick];
       if (!usr || usr.bot || usr.hash !== hash(password, usr.salt)) return send(res, 401, { error: 'Неверный логин или пароль' });
@@ -357,7 +381,12 @@ async function handle(req, res) {
     annaHello(me);
     const chats = Object.values(db.chats).filter(c => c.members.includes(me) && !((db.users[me].hidden) || []).includes(c.id)).map(view);
     const unread = {}; chats.forEach(v => { const n = countUnread(db.chats[v.id], me); if (n) unread[v.id] = n; });
-    return send(res, 200, { ...pub(me, true), chats, unread, archived: db.users[me].archived || [], pinned: db.users[me].pinned || [], blocked: db.users[me].blocked || [], now: Date.now() });
+    return send(res, 200, { ...pub(me, true), chats, unread, archived: db.users[me].archived || [], pinned: db.users[me].pinned || [], wall: db.users[me].wall || null, walls: db.users[me].walls || {}, blocked: db.users[me].blocked || [], now: Date.now() });
+  }
+
+  if (p === '/api/wall' && m === 'POST') { // обои для всех моих чатов (личные)
+    const { wall } = await body(req); if (!wallOk(wall)) return send(res, 400, { error: 'Некорректные обои' });
+    db.users[me].wall = wall || null; save(); return send(res, 200, { wall: db.users[me].wall });
   }
 
   if (p === '/api/e2e/key' && m === 'POST') { // публичный ключ ECDH P-256 (65 байт, base64); приватный ключ остаётся на устройстве
@@ -415,7 +444,7 @@ async function handle(req, res) {
       }
     });
     req.pipe(ws);
-    ws.on('finish', async () => { if (failed) return; await backupFile(name, req.headers['content-type']); send(res, 200, { url: '/uploads/' + name, mtype: /^(mp3|ogg|m4a)$/.test(ext) ? 'audio' : /mp4|webm/.test(ext) ? 'video' : ext === 'bin' ? 'file' : 'image' }); });
+    ws.on('finish', () => { if (!failed) send(res, 200, { url: '/uploads/' + name, mtype: /^(mp3|ogg|m4a)$/.test(ext) ? 'audio' : /mp4|webm/.test(ext) ? 'video' : ext === 'bin' ? 'file' : 'image' }); });
     return;
   }
 
@@ -539,20 +568,20 @@ async function handle(req, res) {
 
   // ---------- техподдержка ----------
   if (p === '/api/support') {
-    const staff = STAFF.has(me);
+    const staff = staffOk(me);
     if (m === 'POST') {
       const { subject, text } = await body(req), sj = String(subject || '').trim().slice(0, 80), t = String(text || '').trim().slice(0, 2000);
       if (!sj || !t) return send(res, 400, { error: 'Укажите тему и опишите проблему' });
       if (db.tickets.filter(x => x.from === me && x.status !== 'closed').length >= 5) return send(res, 400, { error: 'Слишком много открытых обращений: дождитесь ответа или закройте старые' });
       const now = Date.now(), tk = { id: id(), from: me, subject: sj, status: 'open', ts: now, upd: now, msgs: [{ id: id(), from: me, text: t, ts: now }] };
-      db.tickets.push(tk); save();
+      db.tickets.push(tk); save(); notifyStaff(tk, t, true);
       return send(res, 200, tview(tk, me));
     }
     return send(res, 200, { staff, tickets: db.tickets.filter(x => staff || x.from === me).sort((a, b) => b.upd - a.upd).map(x => tview(x, me)) });
   }
   const sm = p.match(/^\/api\/support\/(\w+)\/(msg|close)$/);
   if (sm && m === 'POST') {
-    const tk = db.tickets.find(x => x.id === sm[1]), staff = STAFF.has(me);
+    const tk = db.tickets.find(x => x.id === sm[1]), staff = staffOk(me);
     if (!tk || (tk.from !== me && !staff)) return send(res, 404, { error: 'Обращение не найдено' });
     const { text, on } = await body(req);
     if (sm[2] === 'close') { tk.status = on === false ? 'open' : 'closed'; tk.upd = Date.now(); save(); return send(res, 200, tview(tk, me)); }
@@ -561,17 +590,18 @@ async function handle(req, res) {
     if (tk.status === 'closed') return send(res, 400, { error: 'Обращение закрыто' });
     if (tk.msgs.length >= 200) return send(res, 400, { error: 'В обращении слишком много сообщений' });
     const isStaff = staff && tk.from !== me;
-    tk.msgs.push({ id: id(), from: me, staff: isStaff, text: t, ts: Date.now() }); tk.status = isStaff ? 'answered' : 'open'; tk.upd = Date.now(); save();
+    tk.msgs.push({ id: id(), from: me, staff: isStaff, text: t, ts: Date.now() }); tk.status = isStaff ? 'answered' : 'open'; tk.upd = Date.now(); save(); if (!isStaff) notifyStaff(tk, t, false);
     return send(res, 200, tview(tk, me));
   }
 
-  const cm = p.match(/^\/api\/chats\/(\w+)\/(join|msgs|msg|react|read|archive|members|edit|admin|kick|leave|comments|invite|log|stats|links|settings|fwd|pin|msgedit|msgdel|chatpin|chatdel)$/);
+  const cm = p.match(/^\/api\/chats\/(\w+)\/(join|msgs|msg|react|read|archive|members|edit|admin|kick|leave|comments|invite|log|stats|links|settings|fwd|pin|msgedit|msgdel|chatpin|chatdel|wall|who|ban|bans)$/);
   if (cm) {
     const c = db.chats[cm[1]];
     if (!c) return send(res, 404, { error: 'Чат не найден' });
     if (cm[2] === 'join') {
       if (c.type === 'dm') return send(res, 403, { error: 'Нельзя' });
       if (!c.members.includes(me)) {
+        if ((c.banned || []).includes(me)) return send(res, 403, { error: 'Вы в чёрном списке этого чата' });
         const { code } = await body(req), par = c.parent && db.chats[c.parent]; // комментарии приватного канала открыты его участникам
         if (c.private && !inviteOk(c, code) && !(par && par.members.includes(me))) return send(res, 403, { error: 'Чат приватный: вступить можно только по ссылке-приглашению' });
         c.members.push(me); (c.reads = c.reads || {})[me] = Date.now(); onJoin(c, me, HX); save(); // историю до вступления прочитанной считаем
@@ -585,6 +615,15 @@ async function handle(req, res) {
     }
     if (!c.members.includes(me)) return send(res, 403, { error: 'Вы не участник чата' });
     if (cm[2] === 'read' && m === 'POST') { markRead(c, me, Date.now()); return send(res, 200, { ok: true }); } // собеседник открыл чат: всё до этого момента прочитано
+    if (cm[2] === 'who' && m === 'GET') { // кто прочитал сообщение и кто поставил реакции
+      const mm = (db.msgs[c.id] || []).find(x => x.id === u.searchParams.get('msg'));
+      if (!mm) return send(res, 404, { error: 'Сообщение не найдено' });
+      const one = n => { const x = pub(n); return { nick: n, name: x.name, avatar: x.avatar }; };
+      const reacts = Object.entries(mm.react || {}).map(([n, e]) => ({ ...one(n), emoji: e }));
+      if (c.type === 'channel' && c.owner !== me && !(c.admins || []).includes(me)) return send(res, 200, { reacts, readers: null, pending: null }); // в каналах прочитавших видят только владелец и админы
+      const rd = c.reads || {}, rest = c.members.filter(n => n !== mm.from);
+      return send(res, 200, { reacts, readers: rest.filter(n => (rd[n] || 0) >= mm.ts).slice(0, 200).map(one), pending: rest.filter(n => (rd[n] || 0) < mm.ts).slice(0, 200).map(one), total: rest.length });
+    }
     if (cm[2] === 'msgs') return send(res, 200, alive(c).filter(x => histOk(c, me, x)).slice(-200).map(out));
     if (cm[2] === 'react' && m === 'POST') { // реакции как в iMessage: у каждого участника не больше одной на сообщение
       const { msg: mid, emoji } = await body(req), mm = db.msgs[c.id].find(x => x.id === mid);
@@ -601,6 +640,20 @@ async function handle(req, res) {
       const { on } = await body(req), usr = db.users[me];
       usr.pinned = (usr.pinned || []).filter(x => x !== c.id); if (on) usr.pinned.unshift(c.id); save();
       return send(res, 200, { pinned: usr.pinned });
+    }
+    if (cm[2] === 'wall' && m === 'POST') { // обои чата: scope 'me' — только мне, 'both' — всем участникам чата
+      if (!c.members.includes(me)) return send(res, 403, { error: 'Нет доступа' });
+      const { scope, wall } = await body(req);
+      if (!wallOk(wall)) return send(res, 400, { error: 'Некорректные обои' });
+      if (scope === 'both') {
+        if (c.type !== 'dm' && c.owner !== me && !(c.admins || []).includes(me)) return send(res, 403, { error: 'Общие обои ставят владелец и админы' });
+        if (c.type === 'dm') { const be = blockErr(me, c.members.find(n => n !== me)); if (be) return send(res, 403, { error: be }); }
+        c.wall = wall || null; save(); push(c.members, { t: 'chat', chat: view(c) });
+        return send(res, 200, { wall: c.wall });
+      }
+      const usr = db.users[me]; usr.walls = usr.walls || {};
+      if (wall) usr.walls[c.id] = wall; else delete usr.walls[c.id];
+      save(); return send(res, 200, { walls: usr.walls });
     }
     if (cm[2] === 'chatdel' && m === 'POST') { // удалить чат: «для себя» (из списка, закрепов, архива; в группе и канале — выход) или «для всех»
       const { both } = await body(req);
@@ -668,6 +721,23 @@ async function handle(req, res) {
       if (cm[2] === 'kick') {
         if (!isAdmin || !c.members.includes(t) || t === c.owner || (!owner && (c.admins || []).includes(t))) return send(res, 403, { error: 'Нельзя' });
         c.members = c.members.filter(n => n !== t); c.admins = (c.admins || []).filter(n => n !== t);
+        push([t], { t: 'chatgone', chat: c.id });
+        return upd();
+      }
+      if (cm[2] === 'bans') { // чёрный список: видит только владелец
+        if (!owner) return send(res, 403, { error: 'Только владелец' });
+        return send(res, 200, (c.banned || []).filter(n => db.users[n]).map(n => { const x = pub(n); return { nick: n, name: x.name, avatar: x.avatar, username: x.username }; }));
+      }
+      if (cm[2] === 'ban') { // добавить в чёрный список (исключает из чата, вернуться нельзя) или убрать оттуда; в канале действует и на чат комментариев
+        if (!owner) return send(res, 403, { error: 'Только владелец' });
+        if (!db.users[t] || t === c.owner) return send(res, 400, { error: 'Нельзя' });
+        const apply = g => {
+          g.banned = (g.banned || []).filter(n => n !== t);
+          if (!on) return;
+          g.banned.push(t);
+          if (g.members.includes(t)) { g.members = g.members.filter(n => n !== t); g.admins = (g.admins || []).filter(n => n !== t); push([t], { t: 'chatgone', chat: g.id }); }
+        };
+        apply(c); if (c.discuss && db.chats[c.discuss]) apply(db.chats[c.discuss]);
         return upd();
       }
       if (cm[2] === 'comments') {
@@ -679,7 +749,7 @@ async function handle(req, res) {
       }
     }
     if (cm[2] === 'msg' && m === 'POST') {
-      const { text = '', media, mtype, fname, reply, sticker, enc } = await body(req);
+      const { text = '', media, mtype, fname, reply, sticker, enc, pack, as } = await body(req);
       const eo = enc === undefined ? null : encValid(enc);
       if (enc !== undefined && !eo) return send(res, 400, { error: 'Некорректное шифрованное сообщение' });
       if (eo && (c.type !== 'dm' || c.members.some(n => (db.users[n] || {}).bot))) return send(res, 400, { error: 'Шифрование доступно только в личных чатах с людьми' });
@@ -691,10 +761,16 @@ async function handle(req, res) {
       if (!t && !okm && !stk && !eo) return send(res, 400, { error: 'Пустое сообщение' });
       const msg = { id: id(), from: me, avatar: db.users[me].avatar, text: t, ts: Date.now() };
       const rm = reply && db.msgs[c.id].find(x => x.id === reply);
-      if (rm) msg.reply = { id: rm.id, from: rm.from, ...(rm.enc ? { enc: true } : {}), text: rm.enc ? '' : (rm.text || (rm.sticker ? rm.sticker + ' Стикер' : rm.mtype === 'sticker' ? '🏷 Стикер' : rm.mtype === 'file' ? '📄 ' + rm.fname : '🖼 Медиа')).slice(0, 100) };
+      if (rm) msg.reply = { id: rm.id, from: rm.from, ...(rm.as ? { as: rm.as } : {}), ...(rm.enc ? { enc: true } : {}), text: rm.enc ? '' : (rm.text || (rm.sticker ? rm.sticker + ' Стикер' : rm.mtype === 'sticker' ? '🏷 Стикер' : rm.mtype === 'file' ? '📄 ' + rm.fname : '🖼 Медиа')).slice(0, 100) };
+      if (c.type === 'channel') msg.as = c.id; // посты канала всегда идут от имени канала
+      else if (as) { // в группе владелец и админы канала могут писать от его имени
+        const ch = db.chats[as];
+        if (!ch || ch.type !== 'channel' || c.type !== 'group' || eo || (ch.owner !== me && !(ch.admins || []).includes(me))) return send(res, 403, { error: 'Нельзя писать от имени этого канала' });
+        msg.as = ch.id;
+      }
       if (eo) msg.enc = eo;
       if (stk) { msg.sticker = stk; msg.text = ''; }
-      else if (okm) { msg.media = media; msg.mtype = ['video', 'file', 'sticker'].includes(mtype) ? mtype : 'image'; if (msg.mtype === 'file') msg.fname = String(fname || 'файл').slice(0, 120); }
+      else if (okm) { msg.media = media; msg.mtype = ['video', 'file', 'sticker'].includes(mtype) ? mtype : 'image'; if (msg.mtype === 'file') msg.fname = String(fname || 'файл').slice(0, 120); if (msg.mtype === 'sticker' && typeof pack === 'string') { const pk = packOrigin(me, pack, media); if (pk) msg.pack = pk; } }
       db.msgs[c.id].push(msg); save();
       if (c.type === 'dm') c.members.forEach(n => { const u = db.users[n]; if (u && (u.hidden || []).includes(c.id)) { u.hidden = u.hidden.filter(x => x !== c.id); save(); push([n], { t: 'chat', chat: view(c) }); } });
       push(c.members, { t: 'msg', chat: c.id, msg: out(msg) });
@@ -717,8 +793,8 @@ const ANNA_KB = [
   [annaP('автоудал|исчезающ|самоуничтож'), '⏳ Автоудаление: владелец группы или канала открывает окно информации (нажми на название чата) и выбирает, через сколько удалять сообщения: 1 день, неделя или месяц.'],
   [annaP('тем|оформл|дизайн|киберпанк|майнкрафт|космос|океан|закат|цвет|фон|theme'), '🎨 Темы: Настройки → Чаты → Тема оформления. Есть Киберпанк, Майнкрафт, Космос, Океан, Закат, Золото, Хакер, Джунгли, Япония, Новый год, Осень и другие. А ещё можно собрать свою тему в редакторе («Правка темы») 💜'],
   [annaP('эконом|энерг|батаре|греет|анимац|снег|эффект|тормоз|лагает|battery'), '🔋 Режим экономии: Настройки → Экономия энергии. Он отключает анимации, падающий снег и размытие фона — телефон меньше греется. Эффекты темы можно отключить и отдельно, в настройках чатов.'],
-  [annaP('реакц|эмодзи|лайк|сердеч|react'), '😀 Реакции: двойной клик по сообщению ставит ❤️, а правый клик (долгое нажатие) открывает меню с другими: 👍 👎 😂 ‼️ ❓. Нажми на ту же реакцию ещё раз — она уберётся.'],
-  [annaP('стикер|гиф|gif|пак|sticker'), '🎞 Стикеры и GIF: кнопка рядом с полем ввода. Есть готовые паки (Эмоции, Зверята, Вкусняшки…), можно добавить свои картинки (до 60) и личные GIF.'],
+  [annaP('реакц|эмодзи|лайк|сердеч|react'), '😀 Реакции: двойной клик по сообщению ставит ❤️, а правый клик (долгое нажатие) открывает меню с другими: 👍 👎 😂 ‼️ ❓. Нажми на ту же реакцию ещё раз — она уберётся. Кто что поставил — правый клик по реакции или «Кто прочитал и отреагировал» в меню сообщения.'],
+  [annaP('стикер|гиф|gif|пак|sticker'), '🎞 Стикеры и GIF: кнопка рядом с полем ввода. Есть готовые паки (Эмоции, Зверята, Вкусняшки…), можно добавить свои картинки (до 60) и личные GIF. Чужой стикер, GIF или целый пак можно забрать себе: меню сообщения → «Добавить».'],
   [annaP('закреп|pin'), '📌 Закреп: в меню сообщения выбери «Закрепить» — оно появится сверху чата. В группах и каналах закреплять могут владелец и админы.'],
   [annaP('пересл|forward|репост'), '↪️ Пересылка: в меню сообщения выбери «Переслать в…» и укажи чат, куда отправить.'],
   [annaP('ответит|редакт|изменит|удалит|меню|reply|edit|delete'), '💬 Меню сообщения (правый клик или долгое нажатие): ответить, изменить, удалить, переслать, закрепить и поставить реакцию.'],
@@ -763,19 +839,20 @@ function annaReply(c, nick, msg) { // отвечает на сообщения �
     addMsg(c, { id: id(), from: ANNA, avatar: null, text: annaAnswer(msg.text, (db.users[nick] || {}).name, msg), ts: Date.now() });
   }, 700 + Math.random() * 800);
 }
+ensureAnna();
+
 const os = require('os');
 const lan = () => Object.values(os.networkInterfaces()).flat().filter(a => a && a.family === 'IPv4' && !a.internal).map(a => a.address);
 const server = http.createServer((req, res) => handle(req, res).catch(() => { try { send(res, 500, { error: 'Ошибка сервера' }); } catch {} }));
+server.on('connection', s => s.setNoDelay(true));
+server.keepAliveTimeout = 65000;
 server.on('error', e => {
   if (e.code === 'EADDRINUSE') console.error('Порт ' + PORT + ' уже занят. Закройте другую копию мессенджера или запустите с другим портом:  set PORT=3001 && node server.js');
   else console.error(e);
   process.exit(1);
 });
-loadRemote().then(() => {
-  ensureAnna();
-  server.listen(PORT, () => {
-    console.log('Мессенджер запущен: http://localhost:' + PORT);
-    lan().forEach(ip => console.log('Из локальной сети (телефон, другой ПК): http://' + ip + ':' + PORT));
-    console.log('Данные: ' + (SB ? 'Supabase' : DBF) + '\nФайлы: ' + UP + (SB ? ' (+ копия в Supabase Storage)' : '') + '\nОстановить: Ctrl+C');
-  });
+server.listen(PORT, () => {
+  console.log('Мессенджер запущен: http://localhost:' + PORT);
+  lan().forEach(ip => console.log('Из локальной сети (телефон, другой ПК): http://' + ip + ':' + PORT));
+  console.log('Данные: ' + DBF + '\nФайлы: ' + UP + '\nОстановить: Ctrl+C');
 });
