@@ -144,6 +144,15 @@ small{color:var(--mut)}
 #arch{margin-left:auto;padding:4px 10px}
 #list .it{-webkit-touch-callout:none;user-select:none}
 #msgs{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px;background:var(--chat,transparent)}
+.msk{display:flex;flex-direction:column;gap:10px;margin-top:auto}
+.msk-b{height:38px;border-radius:16px 16px 16px 4px;background:var(--oth,var(--hov));opacity:.55;animation:mskp 1.1s ease-in-out infinite alternate}
+.msk-b.r{align-self:flex-end;border-radius:16px 16px 4px 16px}
+@keyframes mskp{to{opacity:.2}}
+.eco .msk-b,html.nofx .msk-b{animation:none}
+.msgerr{margin:auto;padding:20px;text-align:center;color:var(--mut);cursor:pointer}
+/* свои обои: у многих тем фон входящих пузырей полупрозрачный (rgba .1) и на фото текст не виден — делаем его сплошным */
+#msgs.haswall .m:not(.me) .bub:not(.stk){background:var(--wbub,var(--dlg,var(--panel)))}
+@supports (color:oklch(from red l c h)){#msgs.haswall{--wbub:var(--dlg,oklch(from var(--tx) calc(1 - l) 0 0))}}
 .m{display:flex;gap:8px;align-items:flex-end;max-width:min(560px,88%)}
 .m.me{align-self:flex-end;flex-direction:row-reverse}
 .bub{background:var(--oth);color:var(--tx);border:1px solid var(--bl,transparent);padding:8px 12px;border-radius:16px 16px 16px 4px;min-width:0;overflow-wrap:anywhere;white-space:pre-wrap}
@@ -883,30 +892,30 @@ svg.ic{width:1.15em;height:1.15em;vertical-align:-.2em;flex:none;fill:none;strok
 .bub small.hk{display:flex;justify-content:flex-end;align-items:center}
 .m.me .bub small.hk{opacity:1}
 .hk .tt{opacity:.7}
-.tk{display:inline-block;width:1.5em;height:.95em;margin-left:.4em;color:var(--tickr,currentColor);opacity:.75;transition:opacity .3s}
-.tk[data-r="1"]{opacity:1}
-.tk svg{display:block;width:100%;height:100%;overflow:visible}
-.tk path{fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:14;stroke-dashoffset:0}
-.tk .b{stroke-dashoffset:14;opacity:0}
-.tk[data-r="1"] .b{stroke-dashoffset:0;opacity:1}
-.tk.pop svg{animation:tkIn .38s cubic-bezier(.2,.9,.3,1.25) both}
-.tk.pop .a{animation:tkDraw .34s cubic-bezier(.3,.7,.3,1) both}
-.tk.up .b{animation:tkDraw .42s cubic-bezier(.3,.7,.3,1) var(--d,0ms) both}
-.tk.up .a{animation:tkGlow .55s ease-out var(--d,0ms)}
-.tk.up svg{animation:tkPop .5s ease-out var(--d,0ms)}
+.rtk{display:inline-block;width:1.5em;height:.95em;margin-left:.4em;color:var(--tickr,currentColor);opacity:.75;transition:opacity .3s}
+.rtk[data-r="1"]{opacity:1}
+.rtk svg{display:block;width:100%;height:100%;overflow:visible}
+.rtk path{fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:14;stroke-dashoffset:0}
+.rtk .b{stroke-dashoffset:14;opacity:0}
+.rtk[data-r="1"] .b{stroke-dashoffset:0;opacity:1}
+.rtk.pop svg{animation:tkIn .38s cubic-bezier(.2,.9,.3,1.25) both}
+.rtk.pop .a{animation:tkDraw .34s cubic-bezier(.3,.7,.3,1) both}
+.rtk.up .b{animation:tkDraw .42s cubic-bezier(.3,.7,.3,1) var(--d,0ms) both}
+.rtk.up .a{animation:tkGlow .55s ease-out var(--d,0ms)}
+.rtk.up svg{animation:tkPop .5s ease-out var(--d,0ms)}
 @keyframes tkDraw{from{stroke-dashoffset:14;opacity:.15}to{stroke-dashoffset:0;opacity:1}}
 @keyframes tkIn{from{transform:translateY(5px) scale(.55);opacity:0}to{transform:none;opacity:1}}
 @keyframes tkPop{0%{transform:scale(1)}40%{transform:scale(1.3)}100%{transform:scale(1)}}
 @keyframes tkGlow{0%{filter:none}40%{filter:drop-shadow(0 0 3px currentColor)}100%{filter:none}}
-@media(prefers-reduced-motion:reduce){.tk,.tk *{animation:none!important;transition:none!important}}
-html.eco .tk,html.eco .tk *,html.nofx .tk,html.nofx .tk *{animation:none!important;transition:none!important}
+@media(prefers-reduced-motion:reduce){.rtk,.rtk *{animation:none!important;transition:none!important}}
+html.eco .rtk,html.eco .rtk *,html.nofx .rtk,html.nofx .rtk *{animation:none!important;transition:none!important}
 /* ---------- строка чата как в Telegram ---------- */
 .it .tx .l1,.it .tx .l2{display:flex;align-items:center;gap:8px;min-width:0}
 .it .tx .l1 b,.it .tx .l2 small{flex:1;min-width:0}
-.ct{flex:none;display:flex;align-items:center;font-size:12px;color:var(--mut)}
-.ct.unr{color:var(--acc)}
-.ct .tk{margin:0 .35em 0 0;font-size:12px}
-.it .tk[data-r="1"]{color:var(--acc)}
+.ctm{flex:none;display:flex;align-items:center;font-size:12px;color:var(--mut)}
+.ctm.unr{color:var(--acc)}
+.ctm .rtk{margin:0 .35em 0 0;font-size:12px}
+.it .rtk[data-r="1"]{color:var(--acc)}
 .l2 small .nm{font-weight:600}
 .l2 .bd{flex:none}
 </style>
@@ -1591,7 +1600,7 @@ function lastLabel(l) {
 }
 function chatRowTail(e, c) {
   const tx = e.querySelector('.tx'), b = tx.querySelector('b'), s = tx.querySelector('small'), l = c.last, n = unread[c.id];
-  const l1 = h('div', null, 'l1'), l2 = h('div', null, 'l2'), ct = h('span', null, 'ct' + (n ? ' unr' : ''));
+  const l1 = h('div', null, 'l1'), l2 = h('div', null, 'l2'), ct = h('span', null, 'ctm' + (n ? ' unr' : ''));
   if (l) {
     const own = l.from === me.nick;
     if (own && ticksOn(c)) ct.append(mkTick({ ts: l.ts }, false, c));
@@ -1647,7 +1656,7 @@ const ticksOn = c => !!c && (c.type === 'dm' || c.type === 'group');
 const chatOf = id => chats.find(x => x.id === id);
 const peerRead = c => { let t = 0; const r = (c && c.reads) || {}; for (const n in r) if (n !== me.nick && r[n] > t) t = r[n]; return t; }; // до какого времени прочитал хоть кто-то другой
 function mkTick(m, anim, ch) {
-  const k = document.createElement('span'); k.className = 'tk'; k.dataset.ts = m.ts;
+  const k = document.createElement('span'); k.className = 'rtk'; k.dataset.ts = m.ts;
   k.innerHTML = '<svg viewBox="0 0 17.5 11" aria-hidden="true"><path class="a" d="M1 5.8 4.2 9 10.4 1.8"/><path class="b" d="M6.5 5.8 9.7 9 15.9 1.8"/></svg>';
   const read = peerRead(ch || chatOf(cur.id) || cur) >= m.ts; k.dataset.r = read ? 1 : 0;
   k.title = read ? 'Прочитано' : 'Отправлено'; k.setAttribute('role', 'img'); k.setAttribute('aria-label', k.title);
@@ -1657,7 +1666,7 @@ function mkTick(m, anim, ch) {
 function updTicks() { // собеседник прочитал: вторая галочка дорисовывается по очереди
   if (!cur || !ticksOn(cur)) return;
   const pr = peerRead(chatOf(cur.id) || cur); let i = 0;
-  document.querySelectorAll('#msgs .tk[data-r="0"]').forEach(k => {
+  document.querySelectorAll('#msgs .rtk[data-r="0"]').forEach(k => {
     if (+k.dataset.ts > pr) return;
     k.dataset.r = 1; k.title = 'Прочитано'; k.setAttribute('aria-label', 'Прочитано');
     if (!noAnim()) { k.style.setProperty('--d', Math.min(i++, 8) * 70 + 'ms'); k.classList.remove('up'); void k.offsetWidth; k.classList.add('up'); setTimeout(() => k.classList.remove('up'), 1400); }
@@ -1708,8 +1717,25 @@ function addMsg(m) {
   tm.textContent = (m.enc ? '🔒 ' : '') + (m.edited ? 'изм. ' : '') + new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   if (mine && ticksOn(cur)) { const tt = document.createElement('span'); tt.className = 'tt'; tt.textContent = tm.textContent; tm.textContent = ''; tm.className = 'hk'; tm.append(tt, mkTick(m, !loadingMsgs)); }
   const pa = av(m.name || m.from, m.from === me.nick ? me.avatar : m.avatar, 32); pa.style.cursor = 'pointer'; pa.onclick = () => profile(m.from);
-  b.append(tm); rxDraw(b, m); d.append(pa, b); box.append(d); if (mine || loadingMsgs) down(); // чужие сообщения чат не пролистывают
+  b.append(tm); rxDraw(b, m); d.append(pa, b); box.append(d); if (mine && !loadingMsgs) down(); // чужие сообщения чат не пролистывают; при загрузке списка прокрутка один раз в конце
 }
+
+// ---------- кэш сообщений: чат открывается мгновенно, свежие данные подтягиваются в фоне ----------
+// хранится только в памяти вкладки (расшифрованный текст на диск не пишем)
+const msgCache = new Map(); let openBuf = null; // openBuf: сообщения, пришедшие, пока чат загружается
+const msgSig = l => l.map(m => m.id + ':' + (m.ets || m.edited || '') + ':' + (m.react ? JSON.stringify(m.react) : '')).join('|');
+function cachePut(id, list) {
+  msgCache.delete(id);
+  if (list.some(m => m.encFail)) return; // то, что не удалось расшифровать, не кэшируем
+  msgCache.set(id, list.slice(-200));
+  if (msgCache.size > 30) msgCache.delete(msgCache.keys().next().value);
+}
+function cacheAdd(id, m) {
+  const l = msgCache.get(id); if (l && !l.some(x => x.id === m.id)) { l.push(m); if (l.length > 200) l.shift(); }
+  if (openBuf && cur && cur.id === id) openBuf.push(m);
+}
+async function fetchMsgs(c) { const list = await api('/api/chats/' + c.id + '/msgs'); await E2E.decAll(c, list); return list; }
+const skel = () => { const w = h('div', null, 'msk'); [58, 72, 44, 66].forEach((p, i) => { const b = h('div', null, 'msk-b' + (i % 2 ? ' r' : '')); b.style.width = p + '%'; w.append(b); }); return w; };
 
 async function openChat(c) {
   const first = !cur; // заходим в чат из списка (а не переключаемся между чатами)
@@ -1717,9 +1743,38 @@ async function openChat(c) {
   $('#app').classList.add('chat');
   if (first) slide('up', 320);
   head(); refreshOnline();
-  $('#msgs').textContent = ''; renderList();
-  const list = await api('/api/chats/' + c.id + '/msgs'); await E2E.decAll(c, list);
-  if (cur && cur.id === c.id) { $('#msgs').textContent = ''; loadingMsgs = true; list.forEach(m => { seen.add(m.id); addMsg(m); }); loadingMsgs = false; drawPin(); markRead(); }
+  renderList();
+  const box = $('#msgs'), cid = c.id, cached = msgCache.get(cid), buf = openBuf = [];
+  const paint = list => { // рисуем список целиком, прокрутка вниз один раз в конце (а не после каждого сообщения)
+    box.textContent = ''; msgData.clear(); loadingMsgs = true;
+    try { list.forEach(m => { seen.add(m.id); addMsg(m); }); } finally { loadingMsgs = false; }
+    drawPin(); markRead();
+  };
+  let skT = 0;
+  if (cached) { paint(cached); box.scrollTop = box.scrollHeight; }
+  else { box.textContent = ''; skT = setTimeout(() => { if (cur && cur.id === cid && !box.firstChild) box.append(skel()); }, 120); }
+  try {
+    const list = await fetchMsgs(c);
+    if (!cur || cur.id !== cid) return;
+    const have = new Set(list.map(m => m.id)), fresh = list.concat(buf.filter(m => !have.has(m.id)));
+    const same = cached && msgSig(cached) === msgSig(fresh); // кэш актуален: ничего не перерисовываем
+    cachePut(cid, fresh);
+    if (!same) {
+      const keep = box.scrollTop, atEnd = !cached || box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+      paint(fresh); box.scrollTop = atEnd ? box.scrollHeight : keep;
+    }
+  } catch {
+    if (cur && cur.id === cid && !cached) { box.textContent = ''; const r = h('div', 'Не удалось загрузить сообщения. Нажмите, чтобы повторить', 'msgerr'); r.onclick = () => openChat(cur); box.append(r); }
+  } finally { clearTimeout(skT); if (openBuf === buf) openBuf = null; }
+}
+// фоновая подгрузка последних чатов после входа: первый заход в чат тоже мгновенный
+async function prefetchChats(n = 8) {
+  const top = chats.filter(c => !msgCache.has(c.id)).sort((a, b) => pinned.has(b.id) - pinned.has(a.id) || ((b.last && b.last.ts) || 0) - ((a.last && a.last.ts) || 0)).slice(0, n);
+  for (const c of top) {
+    if (document.hidden) break;
+    try { const l = await fetchMsgs(c); if (!msgCache.has(c.id)) cachePut(c.id, l); } catch {}
+    await new Promise(r => setTimeout(r, 150));
+  }
 }
 
 async function sendMsg(media, mtype, fname) {
@@ -2343,7 +2398,7 @@ function connect() {
 // единая точка входа для сообщений (отправка, SSE, опрос); дубли отбрасываются по id
 function incoming(chatId, m) {
   if (seen.has(m.id)) return;
-  seen.add(m.id);
+  seen.add(m.id); cacheAdd(chatId, m);
   if (cur && cur.id === chatId) { addMsg(m); if (m.from !== me.nick) markRead(); }
   else if (m.from !== me.nick) unread[chatId] = (unread[chatId] || 0) + 1;
   const i = chats.findIndex(x => x.id === chatId);
@@ -2409,6 +2464,7 @@ function rxDraw(b, m) {
   });
 }
 function applyReact(chatId, id, r) {
+  { const cl = msgCache.get(chatId), cm = cl && cl.find(x => x.id === id); if (cm) cm.react = r; }
   const m = msgData.get(id);
   if (!cur || cur.id !== chatId || !m) return;
   m.react = r;
@@ -2482,6 +2538,7 @@ const wallCur = c => (c && walls[c.id]) || (c && c.wall) || me.wall || ''; // с
 function applyWall() {
   const el = $('#msgs'), css = wallCss(wallCur(cur));
   if (css) el.style.setProperty('--chat', css); else el.style.removeProperty('--chat');
+  el.classList.toggle('haswall', !!css);
   const b = $('#wallb'); if (b) b.hidden = !cur;
 }
 $('#wallb').onclick = () => { if (cur) wallDlg(cur); };
@@ -2717,7 +2774,7 @@ async function start() {
   await E2E.init(); // ключи шифрования: создаём или загружаем с устройства
   chats = me.chats; unread = Object.assign({}, me.unread || {}); walls = me.walls || {}; archived = new Set(me.archived || []); pinned = new Set(me.pinned || []); blocked = new Set(me.blocked || []); lastTs = me.now; saveAcc(me.nick, me.name, token);
   $('#auth').hidden = true; $('#app').hidden = false;
-  renderMe(); renderList(); connect(); setInterval(() => { if (!document.hidden) poll(); }, document.documentElement.classList.contains('mob') ? 3500 : 2500); showFixOnce();
+  renderMe(); renderList(); connect(); setInterval(() => { if (!document.hidden) poll(); }, document.documentElement.classList.contains('mob') ? 3500 : 2500); showFixOnce(); setTimeout(prefetchChats, 400);
   if (E2E.needKey()) setTimeout(E2E.keyDialog, 900);
   if (/^#join=/.test(location.hash)) { const hs = location.hash; history.replaceState(null, '', location.pathname + location.search); joinByInvite(hs); }
 }
@@ -3393,6 +3450,7 @@ applyUi();
 
 // ---------- автоудаление: убираем сообщения с экрана ----------
 function removeMsgs(chat, ids) {
+  { const cl = msgCache.get(chat); if (cl) for (let i = cl.length - 1; i >= 0; i--) if (ids.includes(cl[i].id)) cl.splice(i, 1); }
   if (!cur || cur.id !== chat) return;
   ids.forEach(i => { msgData.delete(i); const e = document.querySelector('#msgs .m[data-id="' + i + '"]'); if (e && !e.classList.contains('gone')) delMsgAnim(e); });
 }
@@ -3814,6 +3872,10 @@ const TR = [
 ["Приватность профиля", "Profile privacy", "Приватність профілю", "Прыватнасць профілю", "Prywatność profilu"],
 ["Скрывайте «О себе», аватарку, баннер, @ и время захода", "Hide “About”, avatar, banner, @ and last seen", "Приховуйте «Про себе», аватарку, банер, @ і час заходу", "Хавайце «Пра сябе», аватарку, банер, @ і час наведвання", "Ukryj „O mnie”, awatar, baner, @ i ostatnią aktywność"],
 ["Обои чатов", "Chat wallpapers", "Шпалери чатів", "Шпалеры чатаў", "Tapety czatów"],
+["Обои","Wallpapers","Шпалери","Шпалеры","Tapety"],
+["Фон чатов: для всех или для одного чата","Chat background: for all chats or just one","Тло чатів: для всіх або для одного чату","Фон чатаў: для ўсіх або для аднаго чата","Tło czatów: dla wszystkich lub jednego czatu"],
+["Дизайн интерфейса","Interface design","Дизайн інтерфейсу","Дызайн інтэрфейсу","Wygląd interfejsu"],
+["Стандартный","Default","Стандартний","Стандартны","Domyślny"],
 ["Свои обои для всех чатов или для одного", "Your own wallpaper for all chats or just one", "Власні шпалери для всіх чатів або для одного", "Свае шпалеры для ўсіх чатаў або для аднаго", "Własna tapeta dla wszystkich czatów lub jednego"],
 ["Свой дизайн интерфейса", "Custom interface design", "Власний дизайн інтерфейсу", "Свой дызайн інтэрфейсу", "Własny wygląd interfejsu"],
 ["Загружайте скины из файла, старый вид тоже можно вернуть", "Upload skins from a file; the old look can be restored too", "Завантажуйте скіни з файлу, старий вигляд теж можна повернути", "Загружайце скіны з файла, стары выгляд таксама можна вярнуць", "Wgraj skórki z pliku; stary wygląd też można przywrócić"],
@@ -3927,8 +3989,9 @@ function translate(str) {
   return out;
 }
 const NOTR = '#msgs .nt,#msgs .nk,#msgs .quote,#msgs .stq,#rtxt,.tx b,.pv,script,style,textarea'; // чужие тексты не переводим
+const noTr = el => !!el.closest(NOTR) && !el.closest('#set .si[data-k]'); // пункты настроек переводим, хотя у них тоже .tx b
 function trText(n) {
-  const p = n.parentElement; if (!p || p.closest(NOTR)) return;
+  const p = n.parentElement; if (!p || noTr(p)) return;
   const v = n.nodeValue;
   if (n.__o === undefined || v !== n.__t) n.__o = v; // приложение записало новый текст: это новый оригинал
   const t = translate(n.__o); n.__t = t;
@@ -3936,7 +3999,7 @@ function trText(n) {
 }
 const ATTRS = ['placeholder', 'title', 'aria-label'];
 function trAttrs(el) {
-  if (el.closest && el.closest(NOTR)) return;
+  if (el.closest && noTr(el)) return;
   el.__oa = el.__oa || {}; el.__ta = el.__ta || {};
   ATTRS.forEach(a => {
     if (!el.hasAttribute(a)) return;
@@ -4128,6 +4191,7 @@ async function doEdit() {
   catch (e) { alert(e.error || 'Не удалось изменить'); }
 }
 function applyEdit(chatId, m) {
+  { const cl = msgCache.get(chatId), cm = cl && cl.find(x => x.id === m.id); if (cm) Object.assign(cm, m); }
   { const lc = chatOf(chatId); if (lc && lc.last && lc.last.id === m.id) { lc.last = lastOf(m); refresh(); } } // превью в списке чатов
   const old = msgData.get(m.id); if (!cur || cur.id !== chatId || !old) return;
   Object.assign(old, m); const b = $('#msgs [data-id="' + m.id + '"] .bub'); if (!b) return;

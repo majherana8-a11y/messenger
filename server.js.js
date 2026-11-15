@@ -5,8 +5,8 @@ fs.mkdirSync(UP, { recursive: true });
 
 let db = { users: {}, chats: {}, msgs: {}, tokens: {} };
 try { db = JSON.parse(fs.readFileSync(DBF)); } catch {}
-db.stories = db.stories || [];
-db.tickets = db.tickets || [];
+const fixDb = () => { db.users = db.users || {}; db.chats = db.chats || {}; db.msgs = db.msgs || {}; db.tokens = db.tokens || {}; db.stories = db.stories || []; db.tickets = db.tickets || []; };
+fixDb();
 // операторы техподдержки: ники через запятую, напр.  SUPPORT_ADMINS=admin,vasya node server.js
 const STAFF = new Set((process.env.SUPPORT_ADMINS || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean));
 // операторы по юзернейму (он уникален): по умолчанию @Kartel и @Aristokrat. Если задан SUPPORT_ADMINS (логины), работают только они: так надёжнее
@@ -32,10 +32,55 @@ const flush = () => {
     fs.rename(tmp, DBF, done);
   });
 };
-const save = () => { if (!saveT) saveT = setTimeout(flush, 400); };
+
+// ---------- постоянное хранилище (Supabase): переменные окружения SUPABASE_URL и SUPABASE_KEY (ключ service_role, только на сервере!) ----------
+// Без них данные хранятся только на диске сервера и пропадают при каждом деплое на бесплатном Render.
+const SB_URL = (process.env.SUPABASE_URL || '').trim().replace(/\/+$/, ''), SB_KEY = (process.env.SUPABASE_KEY || '').trim(), SB = !!(SB_URL && SB_KEY);
+const sbH = { apikey: SB_KEY, Authorization: 'Bearer ' + SB_KEY };
+let rSaving = false, rDirty = false, rTimer = null;
+const remoteFlush = async () => { // вся база одним документом в таблице kv (строка id=1)
+  if (!SB) return;
+  if (rSaving) { rDirty = true; return; }
+  rSaving = true;
+  try {
+    const r = await fetch(SB_URL + '/rest/v1/kv?on_conflict=id', { method: 'POST', headers: { ...sbH, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates' }, body: JSON.stringify({ id: 1, data: db }) });
+    if (!r.ok) console.error('Supabase: не удалось сохранить базу', r.status, await r.text());
+  } catch (e) { console.error('Supabase: ошибка сохранения', e.message); }
+  rSaving = false;
+  if (rDirty) { rDirty = false; remoteSchedule(); }
+};
+const remoteSchedule = () => { if (SB && !rTimer) rTimer = setTimeout(() => { rTimer = null; remoteFlush(); }, 1500); }; // копим изменения 1,5 с
+async function loadRemote() { // при старте берём базу из Supabase; если не вышло — НЕ запускаемся, чтобы не затереть данные пустой базой
+  if (!SB) { console.warn('SUPABASE_URL / SUPABASE_KEY не заданы: данные хранятся только на диске сервера и пропадут при деплое'); return; }
+  try {
+    const r = await fetch(SB_URL + '/rest/v1/kv?id=eq.1&select=data', { headers: sbH });
+    if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + await r.text());
+    const rows = await r.json();
+    if (rows[0] && rows[0].data) { db = rows[0].data; fixDb(); console.log('База загружена из Supabase: пользователей ' + Object.keys(db.users).length); }
+    else { console.log('В Supabase пока пусто — стартуем с текущей базой и сохраняем её'); await remoteFlush(); }
+  } catch (e) { console.error('Не удалось загрузить базу из Supabase:', e.message); process.exit(1); }
+}
+const backupFile = async (name, type) => { // копия загруженного файла в Supabase Storage (бакет uploads)
+  if (!SB) return;
+  try {
+    const buf = await fs.promises.readFile(path.join(UP, name));
+    const r = await fetch(SB_URL + '/storage/v1/object/uploads/' + name, { method: 'POST', headers: { ...sbH, 'Content-Type': type || 'application/octet-stream', 'x-upsert': 'true' }, body: buf });
+    if (!r.ok) console.error('Supabase Storage: не удалось сохранить файл', name, r.status, await r.text());
+  } catch (e) { console.error('Supabase Storage: ошибка', e.message); }
+};
+const restoreFile = async (name, f) => { // файла нет на диске (после деплоя) — достаём из Supabase Storage
+  if (!SB) return;
+  try {
+    const r = await fetch(SB_URL + '/storage/v1/object/uploads/' + name, { headers: sbH });
+    if (r.ok) await fs.promises.writeFile(f, Buffer.from(await r.arrayBuffer()));
+  } catch {}
+};
+
+const save = () => { if (!saveT) saveT = setTimeout(flush, 400); remoteSchedule(); };
 const flushSync = () => { try { if (saveT) clearTimeout(saveT); fs.writeFileSync(DBF, JSON.stringify(db)); } catch {} };
-process.on('SIGINT', () => { flushSync(); process.exit(0); });
-process.on('SIGTERM', () => { flushSync(); process.exit(0); });
+const onStop = async () => { flushSync(); if (rTimer) { clearTimeout(rTimer); rTimer = null; } await remoteFlush(); process.exit(0); }; // при остановке (деплой) успеваем сохранить
+process.on('SIGINT', onStop);
+process.on('SIGTERM', onStop);
 
 const EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'video/webm': 'webm', 'audio/mp3': 'mp3', 'audio/mpeg': 'mp3', 'audio/ogg': 'ogg', 'audio/x-m4a': 'm4a', 'audio/mp4': 'm4a', 'video/mp4': 'mp4' };
 const MIME = Object.fromEntries(Object.entries(EXT).map(([m, e]) => [e, m]));
@@ -320,6 +365,7 @@ async function handle(req, res) {
 
   if (p.startsWith('/uploads/')) { // файлы с поддержкой Range (перемотка видео)
     const f = path.join(UP, path.basename(p));
+    if (!fs.existsSync(f)) await restoreFile(path.basename(p), f);
     if (!fs.existsSync(f)) { res.writeHead(404); return res.end(); }
     const size = fs.statSync(f).size, type = MIME[path.extname(f).slice(1)] || 'application/octet-stream';
     const h = { 'Content-Type': type, 'Accept-Ranges': 'bytes', 'X-Content-Type-Options': 'nosniff' };
@@ -444,7 +490,7 @@ async function handle(req, res) {
       }
     });
     req.pipe(ws);
-    ws.on('finish', () => { if (!failed) send(res, 200, { url: '/uploads/' + name, mtype: /^(mp3|ogg|m4a)$/.test(ext) ? 'audio' : /mp4|webm/.test(ext) ? 'video' : ext === 'bin' ? 'file' : 'image' }); });
+    ws.on('finish', async () => { if (failed) return; await backupFile(name, req.headers['content-type']); send(res, 200, { url: '/uploads/' + name, mtype: /^(mp3|ogg|m4a)$/.test(ext) ? 'audio' : /mp4|webm/.test(ext) ? 'video' : ext === 'bin' ? 'file' : 'image' }); });
     return;
   }
 
@@ -839,8 +885,6 @@ function annaReply(c, nick, msg) { // отвечает на сообщения �
     addMsg(c, { id: id(), from: ANNA, avatar: null, text: annaAnswer(msg.text, (db.users[nick] || {}).name, msg), ts: Date.now() });
   }, 700 + Math.random() * 800);
 }
-ensureAnna();
-
 const os = require('os');
 const lan = () => Object.values(os.networkInterfaces()).flat().filter(a => a && a.family === 'IPv4' && !a.internal).map(a => a.address);
 const server = http.createServer((req, res) => handle(req, res).catch(() => { try { send(res, 500, { error: 'Ошибка сервера' }); } catch {} }));
@@ -851,8 +895,11 @@ server.on('error', e => {
   else console.error(e);
   process.exit(1);
 });
-server.listen(PORT, () => {
-  console.log('Мессенджер запущен: http://localhost:' + PORT);
-  lan().forEach(ip => console.log('Из локальной сети (телефон, другой ПК): http://' + ip + ':' + PORT));
-  console.log('Данные: ' + DBF + '\nФайлы: ' + UP + '\nОстановить: Ctrl+C');
+loadRemote().then(() => {
+  ensureAnna();
+  server.listen(PORT, () => {
+    console.log('Мессенджер запущен: http://localhost:' + PORT);
+    lan().forEach(ip => console.log('Из локальной сети (телефон, другой ПК): http://' + ip + ':' + PORT));
+    console.log('Данные: ' + (SB ? 'Supabase' : DBF) + '\nФайлы: ' + UP + (SB ? ' (+ копия в Supabase Storage)' : '') + '\nОстановить: Ctrl+C');
+  });
 });
