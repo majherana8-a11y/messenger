@@ -5,7 +5,7 @@ fs.mkdirSync(UP, { recursive: true });
 
 let db = { users: {}, chats: {}, msgs: {}, tokens: {} };
 try { db = JSON.parse(fs.readFileSync(DBF)); } catch {}
-const fixDb = () => { db.users = db.users || {}; db.chats = db.chats || {}; db.msgs = db.msgs || {}; db.tokens = db.tokens || {}; db.stories = db.stories || []; db.tickets = db.tickets || []; };
+const fixDb = () => { db.users = db.users || {}; db.chats = db.chats || {}; db.msgs = db.msgs || {}; db.tokens = db.tokens || {}; db.stories = db.stories || []; db.posts = db.posts || []; db.tickets = db.tickets || []; };
 fixDb();
 // операторы техподдержки: ники через запятую, напр.  SUPPORT_ADMINS=admin,vasya node server.js
 const STAFF = new Set((process.env.SUPPORT_ADMINS || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean));
@@ -144,6 +144,17 @@ const sview = (st, viewer) => {
   return o;
 };
 const storyRef = st => ({ id: st.id, owner: st.from, media: st.media, mtype: st.mtype });
+// ---------- посты (постоянные записи в профиле: текст и/или фото/видео, лайки) ----------
+const MAX_POSTS = 200, POST_LEN = 2000;
+const pview = (ps, viewer) => { // комментарии (ps.cm) и репосты (ps.re — id исходного поста, ps.rs — его копия на момент репоста)
+  const root = ps.re || ps.id, rs = ps.rs;
+  const o = { id: ps.id, from: ps.from, name: pub(ps.from).name, avatar: pub(ps.from).avatar, text: ps.text || '', media: ps.media || null, mtype: ps.mtype || null, ts: ps.ts, likes: Object.keys(ps.likes || {}).length, liked: !!(ps.likes || {})[viewer],
+    comments: (ps.cm || []).length, reposts: db.posts.filter(x => x.re === root).length, reposted: db.posts.some(x => x.re === root && x.from === viewer), replies: db.posts.filter(x => x.rp === ps.id).length };
+  if (rs) o.repost = { id: root, from: rs.from, name: pub(rs.from).name, avatar: pub(rs.from).avatar, text: rs.text || '', media: rs.media || null, mtype: rs.mtype || null, ts: rs.ts };
+  if (ps.rps) o.reply = { id: ps.rp, from: ps.rps.from, name: pub(ps.rps.from).name, avatar: pub(ps.rps.from).avatar, text: ps.rps.text || '', media: ps.rps.media || null, mtype: ps.rps.mtype || null, ts: ps.rps.ts }; // ответ на пост: копия оригинала остаётся, даже если его удалят
+  return o;
+};
+const cview = k => ({ id: k.id, from: k.from, name: pub(k.from).name, avatar: pub(k.from).avatar, text: k.text, ts: k.ts });
 // ---------- блокировка: пользователь может заблокировать любого другого ----------
 const blockedBy = (a, b) => ((db.users[a] || {}).blocked || []).includes(b); // a заблокировал b
 const blockErr = (a, b) => blockedBy(a, b) ? 'Вы заблокировали этого пользователя. Разблокируйте его, чтобы писать' : blockedBy(b, a) ? 'Пользователь ограничил получение сообщений от вас' : null; // a пишет b
@@ -288,6 +299,35 @@ function packx(u, me, m, q, B, H) { // [код, ответ]
     if (!p.items.includes(B.url)) p.items.push(B.url);
   } else return E(400, 'Нельзя');
   H.save(); return [200, P];
+}
+// ---------- каталог тем: пользователи выкладывают свои темы, остальные ставят их себе ----------
+const TH_KEYS = ['bg','panel','dlg','line','chat','tx','mut','hdt','acc','atx','bbg','sec','sectx','inp','hd','mine','mt','mbl','oth','bl','on','hov'];
+const TH_FONTS = ['sys','serif','mono','round'], TH_FALL = ['snow','leaves','jungle','sakura','summer','embers','code','pixels','ash','eyes'];
+function themeClean(t) { // в базу попадают только проверенные значения: цвета #rrggbb и числа в допустимых пределах
+  t = t && typeof t === 'object' ? t : {}; const col = x => /^#[0-9a-f]{6}$/i.test(x) ? x.toLowerCase() : '#808080', num = (x, a, b, d) => Math.min(b, Math.max(a, x !== '' && x != null && isFinite(+x) ? +x : d));
+  const s = t.f && typeof t.f === 'object' ? t.f : {}, n = t.n && typeof t.n === 'object' ? t.n : {}, f = {};
+  TH_KEYS.forEach(k => { const o = s[k] && typeof s[k] === 'object' ? s[k] : {}; f[k] = { c: col(o.c), a: num(o.a, 0, 1, 1), g: o.g ? 1 : 0, c2: col(o.c2), d: num(o.d, 0, 360, 135) }; });
+  return { name: String(t.name || 'Моя тема').replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 30) || 'Моя тема', f,
+    n: { r: num(n.r, 0, 32, 0), gap: num(n.gap, 0, 24, 0), rb: num(n.rb, 0, 24, 16), ir: num(n.ir, 0, 24, 12), bub: num(n.bub, 0, 28, 16), blur: num(n.blur, 0, 24, 0), sh: num(n.sh, 0, 40, 0), avb: num(n.avb, 0, 4, 0) },
+    font: TH_FONTS.includes(t.font) ? t.font : 'sys', fall: TH_FALL.includes(t.fall) ? t.fall : '' };
+}
+function themex(u, me, m, B, H) { // [код, ответ]
+  const E = (k, e) => [k, { error: e }], P = u.pthemes = u.pthemes || [];
+  const view = (p, n) => ({ id: p.id, name: p.name, f: p.f, n: p.n, font: p.font, fall: p.fall, by: H.pub(n).name, mine: n === me, ts: p.ts });
+  const all = () => { const r = []; Object.entries(H.db.users).forEach(([n, x]) => (x.pthemes || []).forEach(p => r.push(view(p, n)))); return r.sort((a, b) => (b.ts || 0) - (a.ts || 0)).slice(0, 80); };
+  if (m === 'GET') return [200, { themes: all() }];
+  if (m !== 'POST') return E(405, 'Нельзя');
+  if (B.act === 'pub') {
+    const lid = /^c_\w{1,12}$/.test(B.lid) ? B.lid : '', c = themeClean(B.theme), old = lid && P.find(x => x.lid === lid);
+    if (old) { Object.assign(old, c, { ts: Date.now() }); H.save(); return [200, { ok: true, id: old.id, updated: true }]; }
+    if (P.length >= 10) return E(400, 'Можно выложить не больше 10 тем. Снимите ненужные с публикации');
+    const p = { id: H.id(), lid, ...c, ts: Date.now() }; P.push(p); H.save(); return [200, { ok: true, id: p.id }];
+  }
+  if (B.act === 'unpub') {
+    const n = P.length; u.pthemes = P.filter(x => x.id !== B.id && !(B.lid && x.lid === B.lid)); if (u.pthemes.length === n) return E(404, 'Тема не найдена');
+    H.save(); return [200, { ok: true }];
+  }
+  return E(400, 'Нельзя');
 }
 // ---------- действия над сообщениями: изменить, удалить, переслать, закрепить ----------
 function msgx(c, me, a, B, H) {
@@ -496,6 +536,8 @@ async function handle(req, res) {
     return send(res, 200, usr.stickers);
   }
 
+  if (p === '/api/themes') { const r = themex(db.users[me], me, m, m === 'POST' ? await body(req) : {}, HX); return send(res, r[0], r[1]); }
+
   if (p === '/api/packs') { const r = packx(db.users[me], me, m, u.searchParams, m === 'POST' ? await body(req) : {}, HX); return send(res, r[0], r[1]); }
 
   if (p === '/api/gifs') { // личные GIF пользователя: gif, картинки и короткие видео
@@ -650,6 +692,79 @@ async function handle(req, res) {
     { const be = blockErr(me, st.from); if (be) return send(res, 403, { error: be }); }
     const c = getDm(me, st.from);
     return send(res, 200, { chat: view(c), msg: addMsg(c, { id: id(), from: me, avatar: db.users[me].avatar, text: t, story: storyRef(st), ts: Date.now() }) });
+  }
+
+  // ---------- посты ----------
+  if (p === '/api/posts') {
+    if (m === 'GET') {
+      if (u.searchParams.get('feed')) { // общая лента: посты всех, кроме тех, с кем есть блокировка
+        const L = db.posts.filter(x => x.from === me || (!blockedBy(me, x.from) && !blockedBy(x.from, me))).sort((a, b) => b.ts - a.ts).slice(0, 50);
+        return send(res, 200, { posts: L.map(x => pview(x, me)) });
+      }
+      const n = (u.searchParams.get('nick') || '').toLowerCase();
+      if (!db.users[n]) return send(res, 404, { error: 'Пользователь не найден' });
+      return send(res, 200, { user: pub(n, n === me), posts: db.posts.filter(x => x.from === n).sort((a, b) => b.ts - a.ts).map(x => pview(x, me)) });
+    }
+    if (m === 'POST') {
+      const { text, media, reply } = await body(req), t = String(text || '').trim().slice(0, POST_LEN);
+      const tg = reply ? db.posts.find(x => x.id === reply) : null; // пост, на который отвечаем
+      if (reply && !tg) return send(res, 404, { error: 'Пост, на который вы отвечаете, не найден' });
+      if (tg && tg.from !== me) { const be = blockErr(me, tg.from); if (be) return send(res, 403, { error: be }); }
+      if (media && !/^\/uploads\/\w+\.(png|jpg|gif|webp|mp4|webm)$/.test(media)) return send(res, 400, { error: 'Нужно фото или видео' });
+      if (!t && !media) return send(res, 400, { error: 'Пост не может быть пустым' });
+      if (db.posts.filter(x => x.from === me).length >= MAX_POSTS) return send(res, 400, { error: 'Максимум ' + MAX_POSTS + ' постов. Удалите старые' });
+      const ps = { id: id(), from: me, text: t, ts: Date.now(), likes: {} };
+      if (media) { ps.media = media; ps.mtype = /\.(mp4|webm)$/.test(media) ? 'video' : 'image'; }
+      if (tg) { ps.rp = tg.id; ps.rps = { from: tg.from, text: tg.text || '', media: tg.media || null, mtype: tg.mtype || null, ts: tg.ts }; }
+      db.posts.push(ps); save();
+      return send(res, 200, pview(ps, me));
+    }
+    if (m === 'DELETE') {
+      const ps = db.posts.find(x => x.id === u.searchParams.get('id'));
+      if (!ps || ps.from !== me) return send(res, 404, { error: 'Пост не найден' });
+      db.posts = db.posts.filter(x => x !== ps); save();
+      return send(res, 200, { ok: true });
+    }
+  }
+
+  if (p === '/api/posts/like' && m === 'POST') { // лайк ставится и снимается тем же запросом
+    const { id: pid } = await body(req), ps = db.posts.find(x => x.id === pid);
+    if (!ps) return send(res, 404, { error: 'Пост не найден' });
+    if (ps.from !== me) { const be = blockErr(me, ps.from); if (be) return send(res, 403, { error: be }); }
+    ps.likes = ps.likes || {};
+    if (ps.likes[me]) delete ps.likes[me]; else ps.likes[me] = 1;
+    save();
+    return send(res, 200, pview(ps, me));
+  }
+
+  if (p === '/api/posts/comments') { // комментарии к посту: список, добавить, удалить (свой или любой под своим постом)
+    const sp = u.searchParams, ps = db.posts.find(x => x.id === (m === 'POST' ? null : sp.get('id')));
+    if (m === 'GET') { if (!ps) return send(res, 404, { error: 'Пост не найден' }); return send(res, 200, { comments: (ps.cm || []).slice(-200).map(cview) }); }
+    if (m === 'POST') {
+      const b = await body(req), pp = db.posts.find(x => x.id === b.id), t = String(b.text || '').trim().slice(0, 500);
+      if (!pp) return send(res, 404, { error: 'Пост не найден' });
+      if (pp.from !== me) { const be = blockErr(me, pp.from); if (be) return send(res, 403, { error: be }); }
+      if (!t) return send(res, 400, { error: 'Комментарий не может быть пустым' });
+      pp.cm = pp.cm || []; if (pp.cm.length >= 200) return send(res, 400, { error: 'Слишком много комментариев' });
+      const k = { id: id(), from: me, text: t, ts: Date.now() }; pp.cm.push(k); save();
+      return send(res, 200, cview(k));
+    }
+    if (m === 'DELETE') {
+      const k = ps && (ps.cm || []).find(x => x.id === sp.get('cid'));
+      if (!k || (k.from !== me && ps.from !== me)) return send(res, 404, { error: 'Комментарий не найден' });
+      ps.cm = ps.cm.filter(x => x !== k); save(); return send(res, 200, { ok: true });
+    }
+  }
+  if (p === '/api/posts/repost' && m === 'POST') { // репост ставится и снимается тем же запросом; оригинал удалят — копия в репосте останется
+    const { id: pid, text } = await body(req), ps = db.posts.find(x => x.id === pid);
+    if (!ps) return send(res, 404, { error: 'Пост не найден' });
+    const root = ps.re || ps.id, mineR = db.posts.find(x => x.re === root && x.from === me);
+    if (mineR) { db.posts = db.posts.filter(x => x !== mineR); save(); return send(res, 200, pview(ps, me)); }
+    if (ps.from !== me) { const be = blockErr(me, ps.from); if (be) return send(res, 403, { error: be }); }
+    if (db.posts.filter(x => x.from === me).length >= MAX_POSTS) return send(res, 400, { error: 'Максимум ' + MAX_POSTS + ' постов. Удалите старые' });
+    const rs = ps.rs || { from: ps.from, text: ps.text || '', media: ps.media || null, mtype: ps.mtype || null, ts: ps.ts };
+    db.posts.push({ id: id(), from: me, text: String(text || '').trim().slice(0, 500), ts: Date.now(), likes: {}, re: root, rs }); save();
+    return send(res, 200, pview(ps, me));
   }
 
   // ---------- техподдержка ----------
